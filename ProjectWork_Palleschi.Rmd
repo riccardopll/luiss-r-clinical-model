@@ -1,0 +1,392 @@
+---
+title: "DATA ANALYSIS FOR BUSINESS Final Project"
+author:
+- "\\normalsize\\textbf{Student 1}: Chiaselotti Lapo, 308291"
+- "\\normalsize\\textbf{Student 2}: Monteleone Silvia, 315221"
+- "\\normalsize\\textbf{Student 3}: Parissi Filippo, 309151"
+- "\\normalsize\\textbf{Student 4}: Palleschi Riccardo, 319401"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: pdf_document
+fontsize: 12pt
+geometry: margin=1in
+header-includes:
+  \usepackage[T1]{fontenc}
+  \usepackage[utf8]{inputenc}
+  \usepackage{lmodern}
+  \usepackage{fancyhdr}
+  \pagestyle{fancy}
+  \renewcommand{\headrulewidth}{0pt}
+  \fancyhf{}
+  \fancyfoot[C]{\twopagenumbers}
+  \fancypagestyle{plain}{
+    \renewcommand{\headrulewidth}{0pt}
+    \fancyhf{}
+    \fancyfoot[C]{\twopagenumbers}
+  }
+  \usepackage[user]{zref}
+  \newcounter{pageaux}
+  \def\currentauxref{PAGEAUX1}
+  \newcommand{\twopagenumbers}{
+    \stepcounter{pageaux}
+    \thepageaux\, of\, \ref{\currentauxref}
+  }
+  \makeatletter
+  \newcommand{\resetpageaux}{
+    \clearpage
+    \edef\@currentlabel{\thepageaux}\label{\currentauxref}
+    \xdef\currentauxref{PAGEAUX\thepage}
+    \setcounter{pageaux}{0}}
+  \AtEndDvi{\edef\@currentlabel{\thepageaux}\label{\currentauxref}}
+  \makeatletter
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
+                      fig.path = "images/")
+```
+
+\thispagestyle{empty}
+\newpage
+\setcounter{page}{1}
+
+# Question 1: Heart Disease Prediction
+
+## 1.1 Model Formalization
+
+Multinomial logistic regression extends binary logistic regression to handle more than 2 outcome categories. In our case, the response $Y$ has $K=5$ categories (hdc = 0, 1, 2, 3, 4).
+
+The model compares each category to a baseline (hdc = 0):
+
+$$\log\left(\frac{P(Y=k)}{P(Y=0)}\right) = \beta_{k0} + \beta_{k1}X_1 + \cdots + \beta_{kp}X_p, \quad k = 1, 2, \ldots, K-1$$
+
+The probability of belonging to category $k$ is:
+
+$$P(Y=k|X) = \frac{e^{\beta_{k0} + \beta_k^T X}}{1 + \sum_{j=1}^{K-1} e^{\beta_{j0} + \beta_j^T X}}$$
+
+Difference from binary logistic regression:
+
+- Binary logistic: 2 categories, one set of coefficients
+- Multinomial: $K$ categories, $K-1$ sets of coefficients (each vs baseline)
+- More parameters: $(K-1) \times (p+1)$ vs $(p+1)$
+
+## 1.2 Data Import and Preprocessing
+
+```{r load-and-import, message=FALSE}
+# load required libraries
+library(nnet)       # multinomial logistic regression
+library(ggplot2)    # visualization
+library(dplyr)      # data manipulation
+library(caret)      # cross-validation tools
+
+# import the dataset
+heart <- read.csv("db/heart.csv", stringsAsFactors = FALSE)
+str(heart)
+```
+
+```{r transform-variables, results='hide'}
+# convert categorical variables to factors
+heart$place <- as.factor(heart$place)
+heart$cp <- as.factor(heart$cp)
+heart$restecg <- as.factor(heart$restecg)
+heart$slope <- as.factor(heart$slope)
+heart$ca <- as.factor(heart$ca)
+heart$thal <- as.factor(heart$thal)
+heart$hdc <- as.factor(heart$hdc)
+
+# convert dichotomous to dummy (1/0)
+heart$sex <- ifelse(heart$sex == "Male", 1, 0)      # male=1, female=0
+heart$fbs <- ifelse(heart$fbs == TRUE, 1, 0)        # true=1, false=0
+heart$exang <- ifelse(heart$exang == TRUE, 1, 0)    # true=1, false=0
+```
+
+## 1.3 Data Inspection
+
+```{r data-inspection, results='hide'}
+cat("Dataset dimensions:", nrow(heart), "observations,", ncol(heart), "variables")
+```
+
+```{r missing-values}
+# check for missing values
+cat("Missing values per variable:")
+missing <- colSums(is.na(heart))
+print(missing[missing > 0])
+cat("Total missing values:", sum(is.na(heart)))
+```
+
+```{r handle-missing}
+# remove rows with NA (in 'thal' variable)
+heart_clean <- na.omit(heart)
+cat("Clean dataset:", nrow(heart_clean), "obs (", nrow(heart) - nrow(heart_clean), "removed)")
+```
+
+**Preprocessing choices:**
+
+- Removed rows with missing values (small proportion, imputation could bias results)
+- No standardization needed for logistic regression
+
+## 1.4 Visual Inspection
+
+```{r viz-hdc, out.width="70%", fig.align='center'}
+# distribution of heart disease code
+ggplot(heart_clean, aes(x = hdc, fill = hdc)) +
+  geom_bar() +
+  labs(title = "Distribution of Heart Disease Code (hdc)",
+       x = "Heart Disease Code", y = "Count") +
+  theme_minimal() +
+  scale_fill_brewer(palette = "Set2")
+```
+
+```{r viz-continuous, out.width="48%", fig.show='hold', fig.align='center'}
+# boxplot of resting blood pressure by hdc
+ggplot(heart_clean, aes(x = hdc, y = trestbps, fill = hdc)) +
+  geom_boxplot() +
+  labs(title = "Resting Blood Pressure by HDC",
+       x = "HDC", y = "Resting BP (mmHg)") +
+  theme_minimal() +
+  scale_fill_brewer(palette = "Set2") +
+  theme(legend.position = "none")
+
+# boxplot of cholesterol by hdc
+ggplot(heart_clean, aes(x = hdc, y = chol, fill = hdc)) +
+  geom_boxplot() +
+  labs(title = "Cholesterol by HDC",
+       x = "HDC", y = "Cholesterol (mg/dl)") +
+  theme_minimal() +
+  scale_fill_brewer(palette = "Set2") +
+  theme(legend.position = "none")
+```
+
+```{r viz-cp, out.width="70%", fig.align='center'}
+# chest pain type by hdc
+ggplot(heart_clean, aes(x = cp, fill = hdc)) +
+  geom_bar(position = "fill") +
+  labs(title = "Chest Pain Type Distribution by Heart Disease Code",
+       x = "Chest Pain Type", y = "Proportion") +
+  theme_minimal() +
+  scale_fill_brewer(palette = "Set2") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+**Observations:**
+
+- The target variable (hdc) shows class imbalance with hdc=0 being most frequent
+- Resting blood pressure and cholesterol show some variation across hdc groups
+- "Asymptomatic" chest pain is strongly associated with more severe disease
+
+## 1.5 Age Distribution by Sex
+
+```{r age-viz, out.width="70%", fig.align='center'}
+# boxplot of age by sex
+ggplot(heart_clean, aes(x = factor(sex, labels = c("Female", "Male")),
+                        y = age, fill = factor(sex))) +
+  geom_boxplot() +
+  labs(title = "Age Distribution by Sex",
+       x = "Sex", y = "Age (years)") +
+  theme_minimal() +
+  scale_fill_manual(values = c("pink", "lightblue"),
+                    labels = c("Female", "Male"),
+                    name = "Sex")
+```
+
+```{r age-stats}
+# summary statistics by sex
+age_by_sex <- heart_clean %>%
+  group_by(sex) %>%
+  summarise(n = n(),
+            mean_age = round(mean(age), 2),
+            sd_age = round(sd(age), 2),
+            median_age = median(age))
+age_by_sex$sex <- c("Female", "Male")
+print(age_by_sex)
+```
+
+```{r age-test}
+# t-test for age difference between sexes
+t_test_result <- t.test(age ~ sex, data = heart_clean)
+print(t_test_result)
+```
+
+**Result:** The p-value is `r round(t_test_result$p.value, 4)`. At $\alpha$ = 0.05, we `r ifelse(t_test_result$p.value < 0.05, "reject the null hypothesis: there is a significant age difference between sexes", "fail to reject the null hypothesis: no significant age difference between sexes")`.
+
+## 1.6 Multinomial Regression - Full Model
+
+We use the `multinom()` function from the `nnet` package to fit a multinomial logistic regression model.
+
+```{r multinom-full}
+# set reference level for hdc (no disease = 0)
+heart_clean$hdc <- relevel(heart_clean$hdc, ref = "0")
+
+# fit multinomial logistic regression with all predictors
+multinom_full <- multinom(hdc ~ age + sex + place + cp + trestbps + chol +
+                          fbs + restecg + thalch + exang + oldpeak +
+                          slope + ca + thal, data = heart_clean, trace = FALSE)
+```
+
+```{r multinom-zvalues}
+# calculate z-values for interpretation
+z_values <- summary(multinom_full)$coefficients / summary(multinom_full)$standard.errors
+cat("Z-values (first 8 columns):")
+print(round(z_values[, 1:8], 3))
+```
+
+**Interpretation:**
+
+- Each row represents log-odds of that category vs baseline (hdc=0)
+- Positive coefficients increase the probability of that disease category
+- Key predictors with strong effects: `cp` (chest pain type), `ca` (number of vessels), `thal`
+
+## 1.7 Cross-Validation
+
+**Error measure:** We use the misclassification error rate, defined as:
+
+$$\text{Error Rate} = \frac{1}{n}\sum_{i=1}^{n} I(y_i \neq \hat{y}_i)$$
+
+where $I(\cdot)$ is the indicator function.
+
+### CV Method Selection
+
+```{r cv-method}
+# seed based on birthday closest to august 21: filippo parissi (25/08/2005)
+# august 25 is only 4 days from august 21
+set.seed(25082005)
+
+cv_methods <- c("1. Vanilla validation set", "2. LOO-CV",
+                "3. K-fold CV (K=5)", "4. K-fold CV (K=10)")
+selected_method <- sample(cv_methods, 1)
+cat("Selected CV method:", selected_method)
+```
+
+### Implementation
+
+```{r cv-implementation}
+# function to calculate misclassification error
+calc_error <- function(actual, predicted) {
+  mean(actual != predicted)
+}
+
+set.seed(123)
+n <- nrow(heart_clean)
+
+# vanilla validation set approach (80/20 split)
+train_idx <- sample(1:n, 0.8 * n)
+train_data <- heart_clean[train_idx, ]
+val_data <- heart_clean[-train_idx, ]
+
+cat("Training set size:", nrow(train_data))
+cat("Validation set size:", nrow(val_data))
+
+# fit model on training data
+model_val <- multinom(hdc ~ age + sex + place + cp + trestbps + chol + fbs + restecg +
+                      thalch + exang + oldpeak + slope + ca + thal,
+                      data = train_data, trace = FALSE)
+
+# predict on validation set
+pred_val <- predict(model_val, newdata = val_data)
+cv_error <- calc_error(val_data$hdc, pred_val)
+
+cat("Validation Set Results:")
+cat("Error Rate:", round(cv_error, 4))
+cat("Accuracy:", round(1 - cv_error, 4))
+```
+
+## 1.8 Model Improvement
+
+We attempt to improve the model by selecting only the most important predictors based on the initial analysis.
+
+```{r model-improvement}
+library(MASS)
+
+# reduced model with key predictors
+multinom_reduced <- multinom(hdc ~ sex + cp + thalch + exang + oldpeak + ca + thal,
+                             data = heart_clean, trace = FALSE)
+
+# compare AIC (lower is better)
+cat("AIC Comparison:")
+cat("Full Model AIC:", round(AIC(multinom_full), 2))
+cat("Reduced Model AIC:", round(AIC(multinom_reduced), 2))
+```
+
+```{r cv-reduced}
+# cross-validate the reduced model
+model_red <- multinom(hdc ~ sex + cp + thalch + exang + oldpeak + ca + thal,
+                      data = train_data, trace = FALSE)
+pred_red <- predict(model_red, newdata = val_data)
+cv_error_reduced <- calc_error(val_data$hdc, pred_red)
+
+cat("Cross-Validation Comparison:")
+cat("Full Model CV Error:", round(cv_error, 4))
+cat("Reduced Model CV Error:", round(cv_error_reduced, 4))
+cat("Better model based on CV:", ifelse(cv_error_reduced < cv_error, "Reduced", "Full"))
+```
+
+**Model Selection Strategy:**
+
+- Compare models using both AIC and cross-validated error
+- Lower AIC indicates better in-sample fit with complexity penalty
+- Lower CV error indicates better generalization to new data
+
+## 1.9 Binary Logistic Regression
+
+We create a binary response variable `hdc01` where 0 = no disease (hdc=0) and 1 = any disease (hdc=1,2,3,4).
+
+```{r create-binary}
+# create binary response
+heart_binary <- heart_clean
+heart_binary$hdc01 <- ifelse(heart_clean$hdc == "0", 0, 1)
+
+cat("Binary response distribution:")
+table(heart_binary$hdc01)
+cat("Proportions:")
+prop.table(table(heart_binary$hdc01))
+```
+
+```{r logistic-full, results='hide'}
+# fit binary logistic regression
+logit_full <- glm(hdc01 ~ age + sex + place + cp + trestbps + chol + fbs + restecg +
+                  thalch + exang + oldpeak + slope + ca + thal,
+                  data = heart_binary, family = binomial)
+```
+
+```{r significant-predictors}
+# extract significant predictors (p < 0.05)
+coef_summary <- summary(logit_full)$coefficients
+significant <- coef_summary[coef_summary[, 4] < 0.05, ]
+
+cat("Significant predictors (p < 0.05):")
+print(rownames(significant))
+```
+
+**Interpretation:** The significant predictors are those that meaningfully contribute to predicting heart disease presence vs absence.
+
+## 1.10 Model Comparison
+
+```{r in-sample-accuracy}
+# multinomial model accuracy
+pred_multinom <- predict(multinom_full, newdata = heart_clean)
+acc_multinom <- mean(pred_multinom == heart_clean$hdc)
+
+# binary logistic model accuracy
+prob_logit <- predict(logit_full, type = "response")
+pred_logit <- ifelse(prob_logit > 0.5, 1, 0)
+acc_logit <- mean(pred_logit == heart_binary$hdc01)
+
+cat("In-sample Accuracy Comparison:")
+cat("Multinomial Model:", round(acc_multinom, 4))
+cat("Binary Logistic Model:", round(acc_logit, 4))
+```
+
+```{r confusion-multinom}
+# confusion matrix for multinomial model
+cat("Multinomial Model Confusion Matrix:")
+print(table(Predicted = pred_multinom, Actual = heart_clean$hdc))
+```
+
+```{r confusion-binary}
+# confusion matrix for binary logistic model
+cat("Binary Logistic Model Confusion Matrix:")
+print(table(Predicted = pred_logit, Actual = heart_binary$hdc01))
+```
+
+Analysis:
+
+The binary model shows higher accuracy (`r round(acc_logit, 4)`) compared to the multinomial model (`r round(acc_multinom, 4)`). However this comparison is not meaningful because the two models solve fundamentally different problems: the multinomial model predicts disease severity across 5 levels while the binary model only predicts presence or absence. The binary approach aggregates all disease levels into a single category losing valuable clinical information about severity. Distinguishing between 2 classes is inherently easier than 5, so higher accuracy does not indicate a better model. If disease severity matters for clinical decisions the multinomial model remains more informative despite its lower accuracy.
